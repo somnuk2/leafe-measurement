@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="th">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -46,7 +46,7 @@
 </header>
 
 <main class="wrap">
-  <div id="status" class="status">กำลังโหลดข้อมูลจาก Supabase...</div>
+  <div id="status" class="status">Loading data from Supabase...</div>
 
   <div class="grid section">
     <div class="card metric"><div class="label">Leaf Measurements</div><div class="value" id="countLeaf">-</div></div>
@@ -57,9 +57,9 @@
 
   <div class="card section">
     <div class="row">
-      <strong>ตัวกรอง</strong>
-      <input id="sampleFilter" placeholder="Sample code เช่น AVOCADO-001" />
-      <select id="deviceFilter"><option value="">ทุก Device</option></select>
+      <strong>Filters</strong>
+      <input id="sampleFilter" placeholder="Sample code e.g. AVOCADO-001" />
+      <select id="deviceFilter"><option value="">All Devices</option></select>
       <button onclick="loadAll()">Refresh</button>
       <button onclick="downloadExcel()">Download Excel</button>
     </div>
@@ -72,19 +72,19 @@
 
   <div class="card section">
     <h2>Dark Raw Spectrum</h2>
-    <p class="muted">ค่าพื้นฐานมืดของ 18 wavelength ที่ใช้กับ Leaf record นี้</p>
+    <p class="muted">Dark baseline values for the 18 wavelengths used with this leaf record</p>
     <canvas id="darkChart"></canvas>
   </div>
 
   <div class="card section">
     <h2>White Raw Spectrum</h2>
-    <p class="muted">ค่าจาก White Reference ของ 18 wavelength ที่ใช้คำนวณ Reflectance</p>
+    <p class="muted">White reference values across the 18 wavelengths used to calculate reflectance</p>
     <canvas id="whiteChart"></canvas>
   </div>
 
   <div class="card section">
     <h2>Leaf Raw Spectrum</h2>
-    <p class="muted">ค่าดิบจากใบไม้ก่อน Normalize</p>
+    <p class="muted">Raw sensor readings from the leaf before normalization</p>
     <canvas id="leafRawChart"></canvas>
   </div>
 
@@ -146,7 +146,7 @@ let allCalibrations = [];
 
 function fmtTime(v){
   if(!v) return "-";
-  return new Intl.DateTimeFormat("th-TH",{dateStyle:"short",timeStyle:"medium"}).format(new Date(v));
+  return new Intl.DateTimeFormat("en-US",{dateStyle:"short",timeStyle:"medium"}).format(new Date(v));
 }
 function num(v,d=2){ return Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-"; }
 function arr(v){ return Array.isArray(v) ? v : []; }
@@ -195,7 +195,7 @@ function spectralColumns(prefix, wavelengths, values, row){
 async function downloadExcel(){
   const status = document.getElementById("status");
   status.className = "status";
-  status.textContent = "กำลังเตรียมข้อมูลทั้งหมดสำหรับ Excel...";
+  status.textContent = "Preparing all data for Excel...";
 
   try{
     const [leaves, calibrations] = await Promise.all([
@@ -265,12 +265,12 @@ async function downloadExcel(){
     );
 
     status.textContent =
-      `สร้าง Excel สำเร็จ • Leaf ${leaves.length} รายการ • Calibration ${calibrations.length} รายการ`;
+      `Excel created successfully • Leaf ${leaves.length} records • Calibration ${calibrations.length} records`;
 
   }catch(e){
     status.className = "status error";
     status.textContent =
-      "Download Excel ไม่สำเร็จ: " +
+      "Excel download failed: " +
       (e?.message || e);
   }
 }
@@ -278,7 +278,7 @@ async function downloadExcel(){
 async function loadAll(){
   const status = document.getElementById("status");
   status.className = "status";
-  status.textContent = "กำลังโหลดข้อมูลจาก Supabase...";
+  status.textContent = "Loading data from Supabase...";
 
   const [leafRes, calRes] = await Promise.all([
     sb.from("leaf_measurements").select("*").order("created_at",{ascending:false}).limit(200),
@@ -287,8 +287,8 @@ async function loadAll(){
 
   if(leafRes.error || calRes.error){
     status.className = "status error";
-    status.textContent = "อ่านข้อมูลไม่ได้: " + (leafRes.error?.message || calRes.error?.message || "Unknown error") +
-      " — ตรวจ SELECT grant และ RLS policy ใน Supabase";
+    status.textContent = "Failed to read data: " + (leafRes.error?.message || calRes.error?.message || "Unknown error") +
+      " — check SELECT grant and RLS policy in Supabase";
     return;
   }
 
@@ -300,14 +300,14 @@ async function loadAll(){
 
   document.getElementById("countLeaf").textContent = allLeaves.length;
   document.getElementById("countCal").textContent = allCalibrations.length;
-  status.textContent = "เชื่อมต่อ Supabase สำเร็จ • อัปเดต " + new Date().toLocaleTimeString("th-TH");
+  status.textContent = "Connected to Supabase • Updated " + new Date().toLocaleTimeString("en-US");
 }
 
 function populateDevices(rows){
   const sel = document.getElementById("deviceFilter");
   const current = sel.value;
   const devices = [...new Set(rows.map(r=>r.device_code).filter(Boolean))].sort();
-  sel.innerHTML = '<option value="">ทุก Device</option>' +
+  sel.innerHTML = '<option value="">All Devices</option>' +
     devices.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
   sel.value = current;
 }
@@ -330,7 +330,7 @@ function renderLatest(r){
   document.getElementById("latestTime").textContent = r ? fmtTime(r.created_at) : "-";
   document.getElementById("latestInfo").textContent = r
     ? `${r.sample_code || "-"} • ${r.sample_name || "-"} • ${r.plant_type || "-"} • ${fmtTime(r.created_at)}`
-    : "ไม่พบข้อมูล";
+    : "No data found";
 
   const wl = arr(r?.wavelengths), ref = arr(r?.reflectance), dark = arr(r?.dark_raw), white = arr(r?.white_raw), leaf = arr(r?.leaf_raw);
   const at = nm => { const i = wl.indexOf(nm); return i >= 0 ? ref[i] : null; };
