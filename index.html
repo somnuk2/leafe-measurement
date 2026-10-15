@@ -49,7 +49,8 @@
     table{width:100%;border-collapse:collapse;font-size:14px}
     th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}
     th{color:var(--muted);font-weight:650}
-    .scroll{overflow:auto}
+    .scroll{overflow:auto;max-height:min(440px,70vh)}
+    .scroll thead th{position:sticky;top:0;background:var(--card);box-shadow:inset 0 -1px 0 var(--line);z-index:1}
     .status{padding:10px 12px;border-radius:10px;background:#eef5f0;color:#28563a}
     .error{background:#fff0f0;color:#8b2323}
     .muted{color:var(--muted)}
@@ -90,6 +91,7 @@
       <select id="deviceFilter"><option value="">All Devices</option></select>
       <button onclick="loadAll()">Refresh</button>
       <button onclick="downloadExcel()">Download Excel</button>
+      <button onclick="downloadCsv()">Download CSV</button>
     </div>
   </div>
 
@@ -119,6 +121,11 @@
   <div class="card section">
     <h2>Leaf Reflectance Spectrum</h2>
     <p class="muted">Reflectance (%) = (Leaf - Dark) / (White - Dark) × 100</p>
+    <div class="row" style="margin:4px 0 10px">
+      <span class="muted">Overlay latest</span>
+      <select id="overlayCount" title="Number of most recent records to plot together"></select>
+      <span class="muted">records (1 = selected record)</span>
+    </div>
     <canvas id="reflectanceChart"></canvas>
   </div>
 
@@ -143,9 +150,15 @@
     <h2>Measurement History</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th class="admin-only"><input type="checkbox" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all" /></th><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
+        <thead><tr><th class="admin-only"><input type="checkbox" id="leafHeadChk" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all on this page" /></th><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="pgPrev" class="ghost2" onclick="goPage(-1)">&#8249; Prev</button>
+      <span id="pgInfo" class="muted">Page 1 of 1</span>
+      <button id="pgNext" class="ghost2" onclick="goPage(1)">Next &#8250;</button>
+      <span id="pgTotal" class="muted"></span>
     </div>
     <div class="delbar admin-only bar">
       <button id="delLeafBtn" class="danger" onclick="deleteSelected('leaf')" disabled>Delete Selected (0)</button>
@@ -192,6 +205,11 @@ let darkChart = null;
 let whiteChart = null;
 let leafRawChart = null;
 let reflectanceChart = null;
+let selectedRow = null;
+let visibleRows = [];
+const SERIES_COLORS = ["#2f7d4b","#b3392f","#2f6fb3","#c98a1d","#7b4fb3","#1f9e9e","#c1558f","#5a7d1f",
+  "#a8562a","#3a3f9e","#0f8a6a","#9e3a7a","#6f8d1f","#b36a1f","#3f7fa8","#8f4f2f",
+  "#6a4fb3","#1f7d9e","#a83a3a","#4f7d3a"];
 let allLeaves = [];
 let allCalibrations = [];
 
@@ -200,6 +218,10 @@ const ADMIN_PASS_HASH = "e6757959da8eff84c42d4df125b44eb40143dff452afd56aea5cfa0
 let adminMode = false;
 const leafSel = new Set();
 const calSel = new Set();
+const PAGE_SIZE = 50;
+let page = 1;
+let totalLeaf = 0;
+let pageRows = [];
 
 async function sha256Hex(s){
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -246,7 +268,7 @@ function setAdmin(on){
   applyFilters();
 }
 function resetHeadChecks(){
-  document.querySelectorAll("thead .chk").forEach(c=>c.checked=false);
+  document.querySelectorAll("thead .chk").forEach(c=>{ c.checked=false; c.indeterminate=false; });
 }
 function toggleSel(which, id, on){
   const sel = which === "leaf" ? leafSel : calSel;
@@ -310,29 +332,38 @@ function escapeHtml(v){
 }
 
 
-async function fetchAllRows(tableName){
-  // Supabase REST defaults can limit rows, so retrieve in pages.
+async function fetchAllRows(tableName, label){
+  // Fetch every row for export: parallel 1000-row pages with a progress readout.
   const pageSize = 1000;
-  let from = 0;
-  let rows = [];
+  const concurrency = 8;
+  const status = document.getElementById("status");
 
-  while(true){
-    const {data, error} = await sb
-      .from(tableName)
-      .select("*")
-      .order("created_at",{ascending:true})
-      .range(from, from + pageSize - 1);
+  const {count, error:countErr} = await sb.from(tableName).select("id",{count:"exact",head:true});
+  if(countErr) throw countErr;
+  const total = count || 0;
+  if(total === 0) return [];
 
-    if(error) throw error;
+  const rows = new Array(total);
+  let next = 0;
 
-    const batch = data || [];
-    rows = rows.concat(batch);
-
-    if(batch.length < pageSize) break;
-    from += pageSize;
+  async function worker(){
+    while(true){
+      const from = next;
+      next += pageSize;
+      if(from >= total) return;
+      const to = Math.min(from + pageSize - 1, total - 1);
+      const {data, error} = await sb
+        .from(tableName)
+        .select("*")
+        .order("created_at",{ascending:true})
+        .range(from, to);
+      if(error) throw error;
+      (data || []).forEach((r,i)=>{ rows[from + i] = r; });
+      status.textContent = `Downloading ${label}... ${Math.min(from + pageSize, total).toLocaleString()} / ${total.toLocaleString()} rows`;
+    }
   }
-
-  return rows;
+  await Promise.all(Array.from({length:concurrency}, ()=>worker()));
+  return rows.filter(Boolean);
 }
 
 function spectralColumns(prefix, wavelengths, values, row){
@@ -347,49 +378,134 @@ function spectralColumns(prefix, wavelengths, values, row){
   });
 }
 
+function mapLeafRow(r){
+  const row = {
+    id: r.id,
+    created_at: r.created_at,
+    device_code: r.device_code || "",
+    sample_code: r.sample_code || "",
+    sample_name: r.sample_name || "",
+    plant_type: r.plant_type || "",
+    leaf_side: r.leaf_side || "",
+    measurement_point: r.measurement_point ?? "",
+    note: r.note || ""
+  };
+  spectralColumns("dark", r.wavelengths, r.dark_raw, row);
+  spectralColumns("white", r.wavelengths, r.white_raw, row);
+  spectralColumns("leaf", r.wavelengths, r.leaf_raw, row);
+  spectralColumns("reflectance_pct", r.wavelengths, r.reflectance, row);
+  return row;
+}
+
+function mapCalRow(r){
+  const row = {
+    id: r.id,
+    created_at: r.created_at,
+    device_code: r.device_code || "",
+    calibration_type: r.calibration_type || ""
+  };
+  spectralColumns("raw", r.wavelengths, r.values_raw, row);
+  return row;
+}
+
+function csvCell(v){
+  const s = (v === null || v === undefined) ? "" : String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function buildCsvText(rows, columns){
+  const parts = [columns.join(",") + "\r\n"];
+  const CHUNK = 2000;
+  for(let i = 0; i < rows.length; i += CHUNK){
+    const slice = rows.slice(i, i + CHUNK);
+    parts.push(slice.map(r=>columns.map(c=>csvCell(r[c])).join(",")).join("\r\n") + "\r\n");
+  }
+  return parts.join("");
+}
+function buildCsvBlob(rows, columns){
+  const parts = ["\uFEFF"]; // UTF-8 BOM so Excel shows Thai/special characters correctly
+  const CHUNK = 2000;
+  parts.push(columns.join(",") + "\r\n");
+  for(let i = 0; i < rows.length; i += CHUNK){
+    const slice = rows.slice(i, i + CHUNK);
+    parts.push(slice.map(r=>columns.map(c=>csvCell(r[c])).join(",")).join("\r\n") + "\r\n");
+  }
+  return new Blob(parts, {type:"text/csv;charset=utf-8"});
+}
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+}
+function fileStamp(){
+  return new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
+}
+
+async function collectExportRows(){
+  const [leaves, calibrations] = await Promise.all([
+    fetchAllRows("leaf_measurements","leaf measurements"),
+    fetchAllRows("calibrations","calibrations")
+  ]);
+  return {leaves, calibrations};
+}
+
+async function downloadCsv(){
+  const status = document.getElementById("status");
+  status.className = "status";
+  status.textContent = "Preparing CSV export...";
+
+  try{
+    const {leaves, calibrations} = await collectExportRows();
+
+    const leafMapped = leaves.map(r=>({record_type:"leaf", ...mapLeafRow(r)}));
+    const calMapped = calibrations.map(r=>({record_type:"calibration", ...mapCalRow(r)}));
+
+    const leafSchema = Object.keys(leaves[0] ? mapLeafRow(leaves[0]) : mapLeafRow({}));
+    const calSchema = Object.keys(calibrations[0] ? mapCalRow(calibrations[0]) : mapCalRow({}));
+    const columns = ["record_type", ...leafSchema, ...calSchema.filter(c=>!leafSchema.includes(c))];
+
+    const blob = buildCsvBlob([...leafMapped, ...calMapped], columns);
+    downloadBlob(blob, `leaf-spectral-data-${fileStamp()}.csv`);
+
+    status.textContent =
+      `CSV created successfully • Leaf ${leaves.length.toLocaleString()} • Calibration ${calibrations.length.toLocaleString()} records`;
+  }catch(e){
+    status.className = "status error";
+    status.textContent = "CSV download failed: " + (e?.message || e);
+  }
+}
+
 async function downloadExcel(){
   const status = document.getElementById("status");
   status.className = "status";
-  status.textContent = "Preparing all data for Excel...";
+  status.textContent = "Checking data size...";
 
   try{
-    const [leaves, calibrations] = await Promise.all([
-      fetchAllRows("leaf_measurements"),
-      fetchAllRows("calibrations")
+    const [{count:leafCount},{count:calCount}] = await Promise.all([
+      sb.from("leaf_measurements").select("id",{count:"exact",head:true}),
+      sb.from("calibrations").select("id",{count:"exact",head:true})
     ]);
+    const totalRows = (leafCount || 0) + (calCount || 0);
 
-    const leafRows = leaves.map(r=>{
-      const row = {
-        id: r.id,
-        created_at: r.created_at,
-        device_code: r.device_code || "",
-        sample_code: r.sample_code || "",
-        sample_name: r.sample_name || "",
-        plant_type: r.plant_type || "",
-        leaf_side: r.leaf_side || "",
-        measurement_point: r.measurement_point ?? "",
-        note: r.note || ""
-      };
+    if(totalRows > 30000){
+      const goExcel = confirm(
+        `${totalRows.toLocaleString()} records.\n\n` +
+        `Building an Excel (.xlsx) file this large in the browser can freeze this tab for a while.\n\n` +
+        `OK = continue with Excel\n` +
+        `Cancel = download CSV instead (much faster for large data)`
+      );
+      if(!goExcel) return downloadCsv();
+    }
 
-      spectralColumns("dark", r.wavelengths, r.dark_raw, row);
-      spectralColumns("white", r.wavelengths, r.white_raw, row);
-      spectralColumns("leaf", r.wavelengths, r.leaf_raw, row);
-      spectralColumns("reflectance_pct", r.wavelengths, r.reflectance, row);
+    status.textContent = "Preparing all data for Excel...";
+    const {leaves, calibrations} = await collectExportRows();
 
-      return row;
-    });
-
-    const calibrationRows = calibrations.map(r=>{
-      const row = {
-        id: r.id,
-        created_at: r.created_at,
-        device_code: r.device_code || "",
-        calibration_type: r.calibration_type || ""
-      };
-
-      spectralColumns("raw", r.wavelengths, r.values_raw, row);
-      return row;
-    });
+    const leafRows = leaves.map(mapLeafRow);
+    const calibrationRows = calibrations.map(mapCalRow);
 
     const wb = XLSX.utils.book_new();
 
@@ -409,14 +525,9 @@ async function downloadExcel(){
     XLSX.utils.book_append_sheet(wb, wsLeaf, "Leaf Measurements");
     XLSX.utils.book_append_sheet(wb, wsCal, "Calibrations");
 
-    const stamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g,"-")
-      .slice(0,19);
-
     XLSX.writeFile(
       wb,
-      `leaf-spectral-data-${stamp}.xlsx`
+      `leaf-spectral-data-${fileStamp()}.xlsx`
     );
 
     status.textContent =
@@ -430,57 +541,101 @@ async function downloadExcel(){
   }
 }
 
+let loadSeq = 0;
 async function loadAll(){
+  const seq = ++loadSeq;
   const status = document.getElementById("status");
   status.className = "status";
   status.textContent = "Loading data from Supabase...";
 
-  const [leafRes, calRes] = await Promise.all([
-    sb.from("leaf_measurements").select("*").order("created_at",{ascending:false}).limit(200),
-    sb.from("calibrations").select("*").order("created_at",{ascending:false}).limit(200)
+  const q = document.getElementById("sampleFilter").value.trim();
+  const dev = document.getElementById("deviceFilter").value;
+  const from = (page - 1) * PAGE_SIZE;
+
+  const pageQuery = () => {
+    let x = sb.from("leaf_measurements").select("*", {count:"exact"});
+    if(q) x = x.ilike("sample_code", `%${q}%`);
+    if(dev) x = x.eq("device_code", dev);
+    return x.order("created_at",{ascending:false}).range(from, from + PAGE_SIZE - 1);
+  };
+  const latestQuery = () => {
+    let x = sb.from("leaf_measurements").select("*");
+    if(q) x = x.ilike("sample_code", `%${q}%`);
+    if(dev) x = x.eq("device_code", dev);
+    return x.order("created_at",{ascending:false}).range(0, 19);
+  };
+
+  const [pageRes, latestRes, calRes, devRes] = await Promise.all([
+    pageQuery(),
+    latestQuery(),
+    sb.from("calibrations").select("*").order("created_at",{ascending:false}).limit(200),
+    sb.from("leaf_measurements").select("device_code").order("created_at",{ascending:false}).limit(1000)
   ]);
 
-  if(leafRes.error || calRes.error){
+  if(seq !== loadSeq) return; // a newer load superseded this one
+
+  if(pageRes.error || latestRes.error || calRes.error || devRes.error){
     status.className = "status error";
-    status.textContent = "Failed to read data: " + (leafRes.error?.message || calRes.error?.message || "Unknown error") +
+    status.textContent = "Failed to read data: " +
+      (pageRes.error?.message || latestRes.error?.message || calRes.error?.message || devRes.error?.message || "Unknown error") +
       " — check SELECT grant and RLS policy in Supabase";
     return;
   }
 
-  allLeaves = leafRes.data || [];
+  totalLeaf = pageRes.count ?? 0;
+  const maxPage = Math.max(1, Math.ceil(totalLeaf / PAGE_SIZE));
+  if(page > maxPage){ page = maxPage; return loadAll(); }
+
+  pageRows = pageRes.data || [];
+  allLeaves = latestRes.data || [];
   allCalibrations = calRes.data || [];
 
-  populateDevices(allLeaves);
-  applyFilters();
+  populateDevices((devRes.data || []).map(r=>r.device_code));
+  visibleRows = allLeaves;
+  renderHistory(pageRows);
+  renderCalibrations(allCalibrations.filter(r=>!dev || r.device_code===dev));
+  renderLatest(allLeaves[0] || null);
+  updatePager();
 
-  document.getElementById("countLeaf").textContent = allLeaves.length;
+  document.getElementById("countLeaf").textContent = totalLeaf;
   document.getElementById("countCal").textContent = allCalibrations.length;
   status.textContent = "Connected to Supabase • Updated " + new Date().toLocaleTimeString("en-US");
 }
 
-function populateDevices(rows){
-  const sel = document.getElementById("deviceFilter");
-  const current = sel.value;
-  const devices = [...new Set(rows.map(r=>r.device_code).filter(Boolean))].sort();
-  sel.innerHTML = '<option value="">All Devices</option>' +
-    devices.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
-  sel.value = current;
+function goPage(d){
+  const maxPage = Math.max(1, Math.ceil(totalLeaf / PAGE_SIZE));
+  const np = Math.min(maxPage, Math.max(1, page + d));
+  if(np === page) return;
+  page = np;
+  loadAll();
+}
+function updatePager(){
+  const maxPage = Math.max(1, Math.ceil(totalLeaf / PAGE_SIZE));
+  document.getElementById("pgInfo").textContent = `Page ${page} of ${maxPage}`;
+  document.getElementById("pgTotal").textContent = `${totalLeaf} record${totalLeaf === 1 ? "" : "s"}`;
+  document.getElementById("pgPrev").disabled = page <= 1;
+  document.getElementById("pgNext").disabled = page >= maxPage;
 }
 
-function applyFilters(){
-  const q = document.getElementById("sampleFilter").value.trim().toLowerCase();
-  const dev = document.getElementById("deviceFilter").value;
-  const rows = allLeaves.filter(r =>
-    (!q || String(r.sample_code||"").toLowerCase().includes(q)) &&
-    (!dev || r.device_code === dev)
-  );
+function populateDevices(codes){
+  const sel = document.getElementById("deviceFilter");
+  const current = sel.value;
+  const devices = [...new Set(codes.filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All Devices</option>' +
+    devices.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+  if(current && devices.includes(current)) sel.value = current;
+  else if(current){ sel.insertAdjacentHTML("beforeend", `<option>${escapeHtml(current)}</option>`); sel.value = current; }
+}
 
-  renderHistory(rows);
-  renderCalibrations(allCalibrations.filter(r=>!dev || r.device_code===dev));
-  renderLatest(rows[0]);
+let filterDebounce = null;
+function applyFilters(){
+  page = 1;
+  clearTimeout(filterDebounce);
+  filterDebounce = setTimeout(loadAll, 350);
 }
 
 function renderLatest(r){
+  selectedRow = r || null;
   document.getElementById("latestSample").textContent = r?.sample_code || "-";
   document.getElementById("latestTime").textContent = r ? fmtTime(r.created_at) : "-";
   document.getElementById("latestInfo").textContent = r
@@ -504,15 +659,6 @@ function renderLatest(r){
     scales:{
       x:{title:{display:true,text:"Wavelength (nm)"}},
       y:{title:{display:true,text:"Calibrated raw value"},beginAtZero:true}
-    }
-  };
-
-  const commonOptionsReflectance = {
-    responsive:true,
-    interaction:{mode:"index",intersect:false},
-    scales:{
-      x:{title:{display:true,text:"Wavelength (nm)"}},
-      y:{title:{display:true,text:"Reflectance (%)"},beginAtZero:true}
     }
   };
 
@@ -555,19 +701,41 @@ function renderLatest(r){
     options:commonOptionsRaw
   });
 
+  renderReflectance();
+}
+
+function renderReflectance(){
+  const overlayEl = document.getElementById("overlayCount");
+  let n = Math.floor(Number(overlayEl.value)||1);
+  n = Math.max(1, Math.min(20, n));
+  const rows = n === 1
+    ? (selectedRow ? [selectedRow] : visibleRows.slice(0,1))
+    : visibleRows.slice(0, n);
+  const labels = arr(rows[0]?.wavelengths);
+  const datasets = rows.map((r,i)=>({
+    label: `${r.sample_code || "Record"} #${r.id}`,
+    data: arr(r.reflectance),
+    borderColor: SERIES_COLORS[i % SERIES_COLORS.length],
+    backgroundColor: SERIES_COLORS[i % SERIES_COLORS.length],
+    borderWidth: 2,
+    pointRadius: rows.length > 1 ? 0 : 3,
+    tension: .25
+  }));
+  const options = {
+    responsive:true,
+    interaction:{mode:"index",intersect:false},
+    plugins:{legend:{display: rows.length > 1, position:"bottom"}},
+    scales:{
+      x:{title:{display:true,text:"Wavelength (nm)"}},
+      y:{title:{display:true,text:"Reflectance (%)"},beginAtZero:true}
+    }
+  };
   if(reflectanceChart) reflectanceChart.destroy();
   reflectanceChart = new Chart(document.getElementById("reflectanceChart"),{
     type:"line",
-    data:{labels:wl,datasets:[{
-      label:"Leaf Reflectance (%)",
-      data:ref,
-      borderWidth:2,
-      pointRadius:3,
-      tension:.25
-    }]},
-    options:commonOptionsReflectance
+    data:{labels,datasets},
+    options
   });
-
 }
 
 function renderHistory(rows){
@@ -578,6 +746,10 @@ function renderHistory(rows){
       <td>${escapeHtml(r.plant_type||"-")}</td><td>${escapeHtml(r.leaf_side||"-")}</td>
       <td>${escapeHtml(String(r.measurement_point??"-"))}</td><td>${escapeHtml(r.device_code||"-")}</td>
     </tr>`).join("");
+  const head = document.getElementById("leafHeadChk");
+  const checkedN = rows.filter(r=>leafSel.has(String(r.id))).length;
+  head.checked = rows.length > 0 && checkedN === rows.length;
+  head.indeterminate = checkedN > 0 && checkedN < rows.length;
   updateDelBar("leaf");
 }
 
@@ -591,18 +763,39 @@ function renderCalibrations(rows){
 }
 
 function selectMeasurement(id){
-  const r = allLeaves.find(x=>String(x.id)===String(id));
+  const r = pageRows.find(x=>String(x.id)===String(id)) || allLeaves.find(x=>String(x.id)===String(id));
   if(r){ renderLatest(r); window.scrollTo({top:300,behavior:"smooth"}); }
 }
 
 document.getElementById("sampleFilter").addEventListener("input",applyFilters);
 document.getElementById("deviceFilter").addEventListener("change",applyFilters);
+const overlayCountSel = document.getElementById("overlayCount");
+for(let i=1;i<=20;i++){
+  const o = document.createElement("option");
+  o.value = String(i);
+  o.textContent = String(i);
+  overlayCountSel.appendChild(o);
+}
+overlayCountSel.value = "1";
+overlayCountSel.addEventListener("change",renderReflectance);
 document.getElementById("adminPass").addEventListener("keydown",e=>{ if(e.key==="Enter") doLogin(); });
 document.getElementById("adminUser").addEventListener("keydown",e=>{ if(e.key==="Enter") document.getElementById("adminPass").focus(); });
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeLogin(); });
 if(sessionStorage.getItem("leaf_admin")==="1") setAdmin(true);
 loadAll();
 setInterval(loadAll,60000);
+
+let liveRefreshTimer = null;
+function scheduleLiveRefresh(){
+  clearTimeout(liveRefreshTimer);
+  liveRefreshTimer = setTimeout(()=>loadAll(),600);
+}
+sb.channel("dashboard-live")
+  .on("postgres_changes",{event:"INSERT",schema:"public",table:"leaf_measurements"},scheduleLiveRefresh)
+  .on("postgres_changes",{event:"DELETE",schema:"public",table:"leaf_measurements"},scheduleLiveRefresh)
+  .on("postgres_changes",{event:"INSERT",schema:"public",table:"calibrations"},scheduleLiveRefresh)
+  .on("postgres_changes",{event:"DELETE",schema:"public",table:"calibrations"},scheduleLiveRefresh)
+  .subscribe();
 </script>
 </body>
 </html>

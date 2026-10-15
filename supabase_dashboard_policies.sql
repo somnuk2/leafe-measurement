@@ -55,3 +55,27 @@ on public.leaf_measurements
 for delete
 to anon
 using (true);
+
+-- Realtime: the dashboard subscribes to INSERT/DELETE changes so new ESP32
+-- data appears in ~1 second instead of waiting for the 60 s poll.
+-- Safe to re-run: only adds each table if it is not already in the publication.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'leaf_measurements'
+  ) then
+    alter publication supabase_realtime add table public.leaf_measurements;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'calibrations'
+  ) then
+    alter publication supabase_realtime add table public.calibrations;
+  end if;
+end $$;
