@@ -25,6 +25,27 @@
     input,select,button{font:inherit;border-radius:10px;border:1px solid var(--line);padding:10px 12px;background:#fff}
     button{background:var(--accent);color:#fff;border:none;cursor:pointer;font-weight:650}
     button:hover{background:var(--accent2)}
+    button.danger{background:#b3392f}
+    button.danger:hover{background:#8e2b23}
+    button.ghost2{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:650}
+    button.ghost2:hover{background:#f1f5f2}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .head-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+    .head-actions{display:flex;gap:8px;align-items:center}
+    button.ghost{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.45)}
+    button.ghost:hover{background:rgba(255,255,255,.28)}
+    .admin-badge{color:#fff;font-weight:650;font-size:13px;background:rgba(255,255,255,.15);padding:9px 11px;border-radius:10px}
+    .admin-hidden{display:none !important}
+    .admin-only{display:none}
+    body.admin-mode .admin-only{display:table-cell}
+    body.admin-mode .admin-only.bar{display:flex}
+    .overlay{position:fixed;inset:0;background:rgba(15,30,20,.55);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+    .overlay.show{display:flex}
+    .modal{background:#fff;border-radius:16px;padding:22px;width:min(92vw,380px);box-shadow:0 20px 50px rgba(0,0,0,.25)}
+    .modal h3{margin:0 0 12px}
+    .modal .col{display:flex;flex-direction:column;gap:10px}
+    .delbar{gap:10px;align-items:center;margin-top:10px}
+    .chk{width:16px;height:16px;accent-color:#2f7d4b;cursor:pointer}
     table{width:100%;border-collapse:collapse;font-size:14px}
     th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}
     th{color:var(--muted);font-weight:650}
@@ -39,9 +60,16 @@
 </head>
 <body>
 <header>
-  <div class="wrap">
-    <h1>Leaf Spectral Dashboard</h1>
-    <div class="sub">ESP32 + AS7265x + Supabase</div>
+  <div class="wrap head-row">
+    <div>
+      <h1>Leaf Spectral Dashboard</h1>
+      <div class="sub">ESP32 + AS7265x + Supabase</div>
+    </div>
+    <div class="head-actions">
+      <button id="adminBtn" class="ghost" onclick="openLogin()">Admin</button>
+      <span id="adminBadge" class="admin-badge admin-hidden">Admin mode</span>
+      <button id="logoutBtn" class="ghost admin-hidden" onclick="logout()">Log out</button>
+    </div>
   </div>
 </header>
 
@@ -115,9 +143,13 @@
     <h2>Measurement History</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
+        <thead><tr><th class="admin-only"><input type="checkbox" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all" /></th><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
+    </div>
+    <div class="delbar admin-only bar">
+      <button id="delLeafBtn" class="danger" onclick="deleteSelected('leaf')" disabled>Delete Selected (0)</button>
+      <span class="muted">Deletes are permanent</span>
     </div>
   </div>
 
@@ -125,12 +157,31 @@
     <h2>Calibration History</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Date/Time</th><th>Type</th><th>Device</th></tr></thead>
+        <thead><tr><th class="admin-only"><input type="checkbox" class="chk" onchange='selectAll("cal",this.checked)' title="Select all" /></th><th>Date/Time</th><th>Type</th><th>Device</th></tr></thead>
         <tbody id="calBody"></tbody>
       </table>
     </div>
+    <div class="delbar admin-only bar">
+      <button id="delCalBtn" class="danger" onclick="deleteSelected('cal')" disabled>Delete Selected (0)</button>
+      <span class="muted">Deletes are permanent</span>
+    </div>
   </div>
 </main>
+
+<div id="loginOverlay" class="overlay">
+  <div class="modal">
+    <h3>Admin Login</h3>
+    <div class="col">
+      <input id="adminUser" placeholder="Username" autocomplete="off" />
+      <input id="adminPass" type="password" placeholder="Password" autocomplete="off" />
+      <div id="loginErr" class="status error admin-hidden">Invalid username or password</div>
+      <div class="row">
+        <button onclick="doLogin()">Log in</button>
+        <button class="ghost2" onclick="closeLogin()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 const SUPABASE_URL = "https://xojfcxvccvjiruvpqbmd.supabase.co";
@@ -143,6 +194,110 @@ let leafRawChart = null;
 let reflectanceChart = null;
 let allLeaves = [];
 let allCalibrations = [];
+
+const ADMIN_USER = "admin";
+const ADMIN_PASS_HASH = "e6757959da8eff84c42d4df125b44eb40143dff452afd56aea5cfa058f245028";
+let adminMode = false;
+const leafSel = new Set();
+const calSel = new Set();
+
+async function sha256Hex(s){
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+function openLogin(){
+  if(adminMode) return;
+  document.getElementById("loginOverlay").classList.add("show");
+  document.getElementById("loginErr").classList.add("admin-hidden");
+  document.getElementById("adminPass").value = "";
+  document.getElementById("adminUser").focus();
+}
+function closeLogin(){
+  document.getElementById("loginOverlay").classList.remove("show");
+  document.getElementById("adminPass").value = "";
+}
+async function doLogin(){
+  const u = document.getElementById("adminUser").value.trim();
+  const p = document.getElementById("adminPass").value;
+  const h = await sha256Hex(p);
+  if(u === ADMIN_USER && h === ADMIN_PASS_HASH){
+    setAdmin(true);
+    closeLogin();
+  }else{
+    document.getElementById("loginErr").classList.remove("admin-hidden");
+  }
+}
+function logout(){
+  setAdmin(false);
+  leafSel.clear();
+  calSel.clear();
+  resetHeadChecks();
+  applyFilters();
+}
+function setAdmin(on){
+  adminMode = on;
+  document.body.classList.toggle("admin-mode", on);
+  document.getElementById("adminBtn").classList.toggle("admin-hidden", on);
+  document.getElementById("adminBadge").classList.toggle("admin-hidden", !on);
+  document.getElementById("logoutBtn").classList.toggle("admin-hidden", !on);
+  if(on) sessionStorage.setItem("leaf_admin","1");
+  else sessionStorage.removeItem("leaf_admin");
+  applyFilters();
+}
+function resetHeadChecks(){
+  document.querySelectorAll("thead .chk").forEach(c=>c.checked=false);
+}
+function toggleSel(which, id, on){
+  const sel = which === "leaf" ? leafSel : calSel;
+  if(on) sel.add(String(id)); else sel.delete(String(id));
+  updateDelBar(which);
+}
+function selectAll(which, on){
+  const sel = which === "leaf" ? leafSel : calSel;
+  const boxes = document.querySelectorAll(`#${which === "leaf" ? "historyBody" : "calBody"} .chk`);
+  boxes.forEach(b=>{
+    b.checked = on;
+    if(on) sel.add(String(b.dataset.id)); else sel.delete(String(b.dataset.id));
+  });
+  updateDelBar(which);
+}
+function updateDelBar(which){
+  const sel = which === "leaf" ? leafSel : calSel;
+  const btn = document.getElementById(which === "leaf" ? "delLeafBtn" : "delCalBtn");
+  btn.textContent = `Delete Selected (${sel.size})`;
+  btn.disabled = sel.size === 0;
+}
+async function deleteSelected(which){
+  const sel = which === "leaf" ? leafSel : calSel;
+  const table = which === "leaf" ? "leaf_measurements" : "calibrations";
+  const n = sel.size;
+  if(!n) return;
+  if(!confirm(`Delete ${n} record(s) from ${table}? This cannot be undone.`)) return;
+
+  const status = document.getElementById("status");
+  status.className = "status";
+  status.textContent = `Deleting ${n} record(s) from ${table}...`;
+
+  const {data, error} = await sb.from(table).delete().in("id", [...sel]).select("id");
+  if(error){
+    status.className = "status error";
+    status.textContent = "Delete failed: " + (error.message || error);
+    return;
+  }
+
+  const deleted = (data || []).length;
+  sel.clear();
+  resetHeadChecks();
+  await loadAll();
+
+  if(deleted === 0){
+    status.className = "status error";
+    status.textContent = "Deleted 0 records — the DELETE policy is not enabled in Supabase yet. Run supabase_dashboard_policies.sql in the SQL Editor.";
+  }else{
+    status.textContent = `Deleted ${deleted} record(s) from ${table}`;
+  }
+}
 
 function fmtTime(v){
   if(!v) return "-";
@@ -418,15 +573,21 @@ function renderLatest(r){
 function renderHistory(rows){
   document.getElementById("historyBody").innerHTML = rows.map(r=>`
     <tr onclick='selectMeasurement(${JSON.stringify(r.id)})' style="cursor:pointer">
+      <td class="admin-only"><input type="checkbox" class="chk" data-id="${escapeHtml(String(r.id))}" ${leafSel.has(String(r.id))?"checked":""} onclick="event.stopPropagation()" onchange="toggleSel('leaf',this.dataset.id,this.checked)" /></td>
       <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.sample_code||"-")}</td><td>${escapeHtml(r.sample_name||"-")}</td>
       <td>${escapeHtml(r.plant_type||"-")}</td><td>${escapeHtml(r.leaf_side||"-")}</td>
       <td>${escapeHtml(String(r.measurement_point??"-"))}</td><td>${escapeHtml(r.device_code||"-")}</td>
     </tr>`).join("");
+  updateDelBar("leaf");
 }
 
 function renderCalibrations(rows){
   document.getElementById("calBody").innerHTML = rows.map(r=>`
-    <tr><td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.calibration_type||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td></tr>`).join("");
+    <tr>
+      <td class="admin-only"><input type="checkbox" class="chk" data-id="${escapeHtml(String(r.id))}" ${calSel.has(String(r.id))?"checked":""} onchange="toggleSel('cal',this.dataset.id,this.checked)" /></td>
+      <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.calibration_type||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td>
+    </tr>`).join("");
+  updateDelBar("cal");
 }
 
 function selectMeasurement(id){
@@ -436,6 +597,10 @@ function selectMeasurement(id){
 
 document.getElementById("sampleFilter").addEventListener("input",applyFilters);
 document.getElementById("deviceFilter").addEventListener("change",applyFilters);
+document.getElementById("adminPass").addEventListener("keydown",e=>{ if(e.key==="Enter") doLogin(); });
+document.getElementById("adminUser").addEventListener("keydown",e=>{ if(e.key==="Enter") document.getElementById("adminPass").focus(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeLogin(); });
+if(sessionStorage.getItem("leaf_admin")==="1") setAdmin(true);
 loadAll();
 setInterval(loadAll,60000);
 </script>

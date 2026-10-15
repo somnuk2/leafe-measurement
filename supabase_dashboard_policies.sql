@@ -36,3 +36,22 @@ on public.leaf_measurements
 for insert
 to anon
 with check (true);
+
+-- Admin dashboard delete (multi-select). NOTE: this allows any client holding the
+-- public anon key to delete rows via the REST API. See README for hardening advice.
+grant delete on table public.calibrations to anon;
+grant delete on table public.leaf_measurements to anon;
+
+drop policy if exists "Admin delete calibrations" on public.calibrations;
+create policy "Admin delete calibrations"
+on public.calibrations
+for delete
+to anon
+using (true);
+
+drop policy if exists "Admin delete leaf measurements" on public.leaf_measurements;
+create policy "Admin delete leaf measurements"
+on public.leaf_measurements
+for delete
+to anon
+using (true);
