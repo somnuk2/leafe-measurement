@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Leaf Spectral Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    :root{--bg:#f4f7f5;--card:#fff;--ink:#1e2a24;--muted:#6b746f;--line:#dfe7e2;--accent:#2f7d4b;--accent2:#175e36}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+    header{background:linear-gradient(135deg,#183f2a,#2f7d4b);color:#fff;padding:24px 18px}
+    .wrap{max-width:1180px;margin:auto}
+    h1{margin:0 0 4px;font-size:clamp(24px,4vw,38px)}
+    .sub{opacity:.86}
+    main{padding:18px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 6px 18px rgba(0,0,0,.04)}
+    .metric .label{color:var(--muted);font-size:13px}
+    .metric .value{font-size:28px;font-weight:750;margin-top:6px}
+    .section{margin-top:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    input,select,button{font:inherit;border-radius:10px;border:1px solid var(--line);padding:10px 12px;background:#fff}
+    button{background:var(--accent);color:#fff;border:none;cursor:pointer;font-weight:650}
+    button:hover{background:var(--accent2)}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}
+    th{color:var(--muted);font-weight:650}
+    .scroll{overflow:auto}
+    .status{padding:10px 12px;border-radius:10px;background:#eef5f0;color:#28563a}
+    .error{background:#fff0f0;color:#8b2323}
+    .muted{color:var(--muted)}
+    canvas{max-height:390px}
+    @media(max-width:850px){.grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:520px){.grid{grid-template-columns:1fr}.metric .value{font-size:23px}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>Leaf Spectral Dashboard</h1>
+    <div class="sub">ESP32 + AS7265x + Supabase</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="status" class="status">กำลังโหลดข้อมูลจาก Supabase...</div>
+
+  <div class="grid section">
+    <div class="card metric"><div class="label">Leaf Measurements</div><div class="value" id="countLeaf">-</div></div>
+    <div class="card metric"><div class="label">Calibrations</div><div class="value" id="countCal">-</div></div>
+    <div class="card metric"><div class="label">Latest Sample</div><div class="value" id="latestSample">-</div></div>
+    <div class="card metric"><div class="label">Latest Scan</div><div class="value" id="latestTime">-</div></div>
+  </div>
+
+  <div class="card section">
+    <div class="row">
+      <strong>ตัวกรอง</strong>
+      <input id="sampleFilter" placeholder="Sample code เช่น AVOCADO-001" />
+      <select id="deviceFilter"><option value="">ทุก Device</option></select>
+      <button onclick="loadAll()">Refresh</button>
+      <button onclick="downloadExcel()">Download Excel</button>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2>Latest Leaf Measurement</h2>
+    <p class="muted" id="latestInfo">-</p>
+  </div>
+
+  <div class="card section">
+    <h2>Dark Raw Spectrum</h2>
+    <p class="muted">ค่าพื้นฐานมืดของ 18 wavelength ที่ใช้กับ Leaf record นี้</p>
+    <canvas id="darkChart"></canvas>
+  </div>
+
+  <div class="card section">
+    <h2>White Raw Spectrum</h2>
+    <p class="muted">ค่าจาก White Reference ของ 18 wavelength ที่ใช้คำนวณ Reflectance</p>
+    <canvas id="whiteChart"></canvas>
+  </div>
+
+  <div class="card section">
+    <h2>Leaf Raw Spectrum</h2>
+    <p class="muted">ค่าดิบจากใบไม้ก่อน Normalize</p>
+    <canvas id="leafRawChart"></canvas>
+  </div>
+
+  <div class="card section">
+    <h2>Leaf Reflectance Spectrum</h2>
+    <p class="muted">Reflectance (%) = (Leaf - Dark) / (White - Dark) × 100</p>
+    <canvas id="reflectanceChart"></canvas>
+  </div>
+
+  <div class="grid section">
+    <div class="card metric"><div class="label">680 nm</div><div class="value" id="nm680">-</div></div>
+    <div class="card metric"><div class="label">705 nm</div><div class="value" id="nm705">-</div></div>
+    <div class="card metric"><div class="label">730 nm</div><div class="value" id="nm730">-</div></div>
+    <div class="card metric"><div class="label">Max Reflectance</div><div class="value" id="maxRef">-</div></div>
+  </div>
+
+  <div class="card section">
+    <h2>18 Wavelength Channels</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>nm</th><th>Dark Raw</th><th>White Raw</th><th>Leaf Raw</th><th>Reflectance %</th></tr></thead>
+        <tbody id="spectralBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2>Measurement History</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2>Calibration History</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Date/Time</th><th>Type</th><th>Device</th></tr></thead>
+        <tbody id="calBody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const SUPABASE_URL = "https://xojfcxvccvjiruvpqbmd.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_oDuZ718NaPJWo_mMHiaUoA_fBeQsGb3";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+let darkChart = null;
+let whiteChart = null;
+let leafRawChart = null;
+let reflectanceChart = null;
+let allLeaves = [];
+let allCalibrations = [];
+
+function fmtTime(v){
+  if(!v) return "-";
+  return new Intl.DateTimeFormat("th-TH",{dateStyle:"short",timeStyle:"medium"}).format(new Date(v));
+}
+function num(v,d=2){ return Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-"; }
+function arr(v){ return Array.isArray(v) ? v : []; }
+function escapeHtml(v){
+  return String(v).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+
+
+async function fetchAllRows(tableName){
+  // Supabase REST defaults can limit rows, so retrieve in pages.
+  const pageSize = 1000;
+  let from = 0;
+  let rows = [];
+
+  while(true){
+    const {data, error} = await sb
+      .from(tableName)
+      .select("*")
+      .order("created_at",{ascending:true})
+      .range(from, from + pageSize - 1);
+
+    if(error) throw error;
+
+    const batch = data || [];
+    rows = rows.concat(batch);
+
+    if(batch.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return rows;
+}
+
+function spectralColumns(prefix, wavelengths, values, row){
+  const wl = arr(wavelengths);
+  const vals = arr(values);
+
+  wl.forEach((nm,i)=>{
+    row[`${prefix}_${nm}nm`] =
+      vals[i] !== undefined && vals[i] !== null
+        ? Number(vals[i])
+        : "";
+  });
+}
+
+async function downloadExcel(){
+  const status = document.getElementById("status");
+  status.className = "status";
+  status.textContent = "กำลังเตรียมข้อมูลทั้งหมดสำหรับ Excel...";
+
+  try{
+    const [leaves, calibrations] = await Promise.all([
+      fetchAllRows("leaf_measurements"),
+      fetchAllRows("calibrations")
+    ]);
+
+    const leafRows = leaves.map(r=>{
+      const row = {
+        id: r.id,
+        created_at: r.created_at,
+        device_code: r.device_code || "",
+        sample_code: r.sample_code || "",
+        sample_name: r.sample_name || "",
+        plant_type: r.plant_type || "",
+        leaf_side: r.leaf_side || "",
+        measurement_point: r.measurement_point ?? "",
+        note: r.note || ""
+      };
+
+      spectralColumns("dark", r.wavelengths, r.dark_raw, row);
+      spectralColumns("white", r.wavelengths, r.white_raw, row);
+      spectralColumns("leaf", r.wavelengths, r.leaf_raw, row);
+      spectralColumns("reflectance_pct", r.wavelengths, r.reflectance, row);
+
+      return row;
+    });
+
+    const calibrationRows = calibrations.map(r=>{
+      const row = {
+        id: r.id,
+        created_at: r.created_at,
+        device_code: r.device_code || "",
+        calibration_type: r.calibration_type || ""
+      };
+
+      spectralColumns("raw", r.wavelengths, r.values_raw, row);
+      return row;
+    });
+
+    const wb = XLSX.utils.book_new();
+
+    const wsLeaf = XLSX.utils.json_to_sheet(leafRows);
+    const wsCal = XLSX.utils.json_to_sheet(calibrationRows);
+
+    // Helpful default column widths
+    wsLeaf["!cols"] = [
+      {wch:8},{wch:24},{wch:18},{wch:18},{wch:22},
+      {wch:16},{wch:12},{wch:12},{wch:28}
+    ];
+
+    wsCal["!cols"] = [
+      {wch:8},{wch:24},{wch:18},{wch:18}
+    ];
+
+    XLSX.utils.book_append_sheet(wb, wsLeaf, "Leaf Measurements");
+    XLSX.utils.book_append_sheet(wb, wsCal, "Calibrations");
+
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g,"-")
+      .slice(0,19);
+
+    XLSX.writeFile(
+      wb,
+      `leaf-spectral-data-${stamp}.xlsx`
+    );
+
+    status.textContent =
+      `สร้าง Excel สำเร็จ • Leaf ${leaves.length} รายการ • Calibration ${calibrations.length} รายการ`;
+
+  }catch(e){
+    status.className = "status error";
+    status.textContent =
+      "Download Excel ไม่สำเร็จ: " +
+      (e?.message || e);
+  }
+}
+
+async function loadAll(){
+  const status = document.getElementById("status");
+  status.className = "status";
+  status.textContent = "กำลังโหลดข้อมูลจาก Supabase...";
+
+  const [leafRes, calRes] = await Promise.all([
+    sb.from("leaf_measurements").select("*").order("created_at",{ascending:false}).limit(200),
+    sb.from("calibrations").select("*").order("created_at",{ascending:false}).limit(200)
+  ]);
+
+  if(leafRes.error || calRes.error){
+    status.className = "status error";
+    status.textContent = "อ่านข้อมูลไม่ได้: " + (leafRes.error?.message || calRes.error?.message || "Unknown error") +
+      " — ตรวจ SELECT grant และ RLS policy ใน Supabase";
+    return;
+  }
+
+  allLeaves = leafRes.data || [];
+  allCalibrations = calRes.data || [];
+
+  populateDevices(allLeaves);
+  applyFilters();
+
+  document.getElementById("countLeaf").textContent = allLeaves.length;
+  document.getElementById("countCal").textContent = allCalibrations.length;
+  status.textContent = "เชื่อมต่อ Supabase สำเร็จ • อัปเดต " + new Date().toLocaleTimeString("th-TH");
+}
+
+function populateDevices(rows){
+  const sel = document.getElementById("deviceFilter");
+  const current = sel.value;
+  const devices = [...new Set(rows.map(r=>r.device_code).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">ทุก Device</option>' +
+    devices.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+  sel.value = current;
+}
+
+function applyFilters(){
+  const q = document.getElementById("sampleFilter").value.trim().toLowerCase();
+  const dev = document.getElementById("deviceFilter").value;
+  const rows = allLeaves.filter(r =>
+    (!q || String(r.sample_code||"").toLowerCase().includes(q)) &&
+    (!dev || r.device_code === dev)
+  );
+
+  renderHistory(rows);
+  renderCalibrations(allCalibrations.filter(r=>!dev || r.device_code===dev));
+  renderLatest(rows[0]);
+}
+
+function renderLatest(r){
+  document.getElementById("latestSample").textContent = r?.sample_code || "-";
+  document.getElementById("latestTime").textContent = r ? fmtTime(r.created_at) : "-";
+  document.getElementById("latestInfo").textContent = r
+    ? `${r.sample_code || "-"} • ${r.sample_name || "-"} • ${r.plant_type || "-"} • ${fmtTime(r.created_at)}`
+    : "ไม่พบข้อมูล";
+
+  const wl = arr(r?.wavelengths), ref = arr(r?.reflectance), dark = arr(r?.dark_raw), white = arr(r?.white_raw), leaf = arr(r?.leaf_raw);
+  const at = nm => { const i = wl.indexOf(nm); return i >= 0 ? ref[i] : null; };
+
+  document.getElementById("nm680").textContent = at(680)!=null ? num(at(680))+"%" : "-";
+  document.getElementById("nm705").textContent = at(705)!=null ? num(at(705))+"%" : "-";
+  document.getElementById("nm730").textContent = at(730)!=null ? num(at(730))+"%" : "-";
+  document.getElementById("maxRef").textContent = ref.length ? num(Math.max(...ref.map(Number)))+"%" : "-";
+
+  document.getElementById("spectralBody").innerHTML = wl.map((nm,i)=>`
+    <tr><td>${nm}</td><td>${num(dark[i],5)}</td><td>${num(white[i],5)}</td><td>${num(leaf[i],5)}</td><td>${num(ref[i])}</td></tr>`).join("");
+
+  const commonOptionsRaw = {
+    responsive:true,
+    interaction:{mode:"index",intersect:false},
+    scales:{
+      x:{title:{display:true,text:"Wavelength (nm)"}},
+      y:{title:{display:true,text:"Calibrated raw value"},beginAtZero:true}
+    }
+  };
+
+  const commonOptionsReflectance = {
+    responsive:true,
+    interaction:{mode:"index",intersect:false},
+    scales:{
+      x:{title:{display:true,text:"Wavelength (nm)"}},
+      y:{title:{display:true,text:"Reflectance (%)"},beginAtZero:true}
+    }
+  };
+
+  if(darkChart) darkChart.destroy();
+  darkChart = new Chart(document.getElementById("darkChart"),{
+    type:"line",
+    data:{labels:wl,datasets:[{
+      label:"Dark Raw",
+      data:dark,
+      borderWidth:2,
+      pointRadius:3,
+      tension:.25
+    }]},
+    options:commonOptionsRaw
+  });
+
+  if(whiteChart) whiteChart.destroy();
+  whiteChart = new Chart(document.getElementById("whiteChart"),{
+    type:"line",
+    data:{labels:wl,datasets:[{
+      label:"White Raw",
+      data:white,
+      borderWidth:2,
+      pointRadius:3,
+      tension:.25
+    }]},
+    options:commonOptionsRaw
+  });
+
+  if(leafRawChart) leafRawChart.destroy();
+  leafRawChart = new Chart(document.getElementById("leafRawChart"),{
+    type:"line",
+    data:{labels:wl,datasets:[{
+      label:"Leaf Raw",
+      data:leaf,
+      borderWidth:2,
+      pointRadius:3,
+      tension:.25
+    }]},
+    options:commonOptionsRaw
+  });
+
+  if(reflectanceChart) reflectanceChart.destroy();
+  reflectanceChart = new Chart(document.getElementById("reflectanceChart"),{
+    type:"line",
+    data:{labels:wl,datasets:[{
+      label:"Leaf Reflectance (%)",
+      data:ref,
+      borderWidth:2,
+      pointRadius:3,
+      tension:.25
+    }]},
+    options:commonOptionsReflectance
+  });
+
+}
+
+function renderHistory(rows){
+  document.getElementById("historyBody").innerHTML = rows.map(r=>`
+    <tr onclick='selectMeasurement(${JSON.stringify(r.id)})' style="cursor:pointer">
+      <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.sample_code||"-")}</td><td>${escapeHtml(r.sample_name||"-")}</td>
+      <td>${escapeHtml(r.plant_type||"-")}</td><td>${escapeHtml(r.leaf_side||"-")}</td>
+      <td>${escapeHtml(String(r.measurement_point??"-"))}</td><td>${escapeHtml(r.device_code||"-")}</td>
+    </tr>`).join("");
+}
+
+function renderCalibrations(rows){
+  document.getElementById("calBody").innerHTML = rows.map(r=>`
+    <tr><td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.calibration_type||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td></tr>`).join("");
+}
+
+function selectMeasurement(id){
+  const r = allLeaves.find(x=>String(x.id)===String(id));
+  if(r){ renderLatest(r); window.scrollTo({top:300,behavior:"smooth"}); }
+}
+
+document.getElementById("sampleFilter").addEventListener("input",applyFilters);
+document.getElementById("deviceFilter").addEventListener("change",applyFilters);
+loadAll();
+setInterval(loadAll,60000);
+</script>
+</body>
+</html>
