@@ -80,14 +80,14 @@
   <div class="grid section">
     <div class="card metric"><div class="label">Leaf Measurements</div><div class="value" id="countLeaf">-</div></div>
     <div class="card metric"><div class="label">Calibrations</div><div class="value" id="countCal">-</div></div>
-    <div class="card metric"><div class="label">Latest Sample</div><div class="value" id="latestSample">-</div></div>
+    <div class="card metric"><div class="label">Latest Tree ID</div><div class="value" id="latestSample">-</div></div>
     <div class="card metric"><div class="label">Latest Scan</div><div class="value" id="latestTime">-</div></div>
   </div>
 
   <div class="card section">
     <div class="row">
       <strong>Filters</strong>
-      <input id="sampleFilter" placeholder="Sample code e.g. AVOCADO-001" />
+      <input id="sampleFilter" placeholder="Tree ID e.g. TREE-001" />
       <select id="deviceFilter"><option value="">All Devices</option></select>
       <button onclick="loadAll()">Refresh</button>
       <button onclick="downloadExcel()">Download Excel</button>
@@ -150,7 +150,7 @@
     <h2>Measurement History</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th class="admin-only"><input type="checkbox" id="leafHeadChk" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all on this page" /></th><th>Date/Time</th><th>Sample</th><th>Name</th><th>Plant</th><th>Side</th><th>Point</th><th>Device</th></tr></thead>
+        <thead><tr><th class="admin-only"><input type="checkbox" id="leafHeadChk" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all on this page" /></th><th>Date/Time</th><th>Tree ID</th><th>Leaf ID</th><th>Variety</th><th>Position</th><th>Device</th></tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
     </div>
@@ -380,16 +380,26 @@ function spectralColumns(prefix, wavelengths, values, row){
   });
 }
 
+function positionLabel(r){
+  const side = r.leaf_side || "";
+  let point = r.measurement_point;
+  if(point === 1 || point === "1") point = "Base";
+  else if(point === 2 || point === "2") point = "Middle";
+  else if(point === 3 || point === "3") point = "Tip";
+  else point = point == null ? "" : String(point);
+  if(side && point) return `${side} · ${point}`;
+  return side || point || "";
+}
+
 function mapLeafRow(r){
   const row = {
     id: r.id,
     created_at: r.created_at,
     device_code: r.device_code || "",
-    sample_code: r.sample_code || "",
-    sample_name: r.sample_name || "",
-    plant_type: r.plant_type || "",
-    leaf_side: r.leaf_side || "",
-    measurement_point: r.measurement_point ?? "",
+    tree_id: r.tree_id || r.sample_code || "",
+    leaf_id: r.leaf_id || r.sample_name || "",
+    variety: r.variety || r.plant_type || "",
+    position: positionLabel(r),
     note: r.note || ""
   };
   spectralColumns("dark", r.wavelengths, r.dark_raw, row);
@@ -516,8 +526,7 @@ async function downloadExcel(){
 
     // Helpful default column widths
     wsLeaf["!cols"] = [
-      {wch:8},{wch:24},{wch:18},{wch:18},{wch:22},
-      {wch:16},{wch:12},{wch:12},{wch:28}
+      {wch:8},{wch:24},{wch:18},{wch:14},{wch:14},{wch:18},{wch:16},{wch:28}
     ];
 
     wsCal["!cols"] = [
@@ -553,16 +562,18 @@ async function loadAll(){
   const q = document.getElementById("sampleFilter").value.trim();
   const dev = document.getElementById("deviceFilter").value;
   const from = (page - 1) * PAGE_SIZE;
+  // Match Tree ID on the new column or the legacy sample_code (old rows /
+  // firmware that has not been updated yet). Strip or() syntax characters.
+  const qq = q.replace(/[%,()]/g, "");
+  const treeFilter = x => qq ? x.or(`tree_id.ilike.%${qq}%,sample_code.ilike.%${qq}%`) : x;
 
   const pageQuery = () => {
-    let x = sb.from("leaf_measurements").select("*", {count:"exact"});
-    if(q) x = x.ilike("sample_code", `%${q}%`);
+    let x = treeFilter(sb.from("leaf_measurements").select("*", {count:"exact"}));
     if(dev) x = x.eq("device_code", dev);
     return x.order("created_at",{ascending:false}).range(from, from + PAGE_SIZE - 1);
   };
   const latestQuery = () => {
-    let x = sb.from("leaf_measurements").select("*");
-    if(q) x = x.ilike("sample_code", `%${q}%`);
+    let x = treeFilter(sb.from("leaf_measurements").select("*"));
     if(dev) x = x.eq("device_code", dev);
     return x.order("created_at",{ascending:false}).range(0, 19);
   };
@@ -638,10 +649,10 @@ function applyFilters(){
 
 function renderLatest(r){
   selectedRow = r || null;
-  document.getElementById("latestSample").textContent = r?.sample_code || "-";
+  document.getElementById("latestSample").textContent = r?.tree_id || r?.sample_code || "-";
   document.getElementById("latestTime").textContent = r ? fmtTime(r.created_at) : "-";
   document.getElementById("latestInfo").textContent = r
-    ? `${r.sample_code || "-"} • ${r.sample_name || "-"} • ${r.plant_type || "-"} • ${fmtTime(r.created_at)}`
+    ? `${r.tree_id || r.sample_code || "-"} • ${r.leaf_id || r.sample_name || "-"} • ${r.variety || r.plant_type || "-"} • ${fmtTime(r.created_at)}`
     : "No data found";
 
   const wl = arr(r?.wavelengths), ref = arr(r?.reflectance), dark = arr(r?.dark_raw), white = arr(r?.white_raw), leaf = arr(r?.leaf_raw);
@@ -715,7 +726,7 @@ function renderReflectance(){
     : visibleRows.slice(0, n);
   const labels = arr(rows[0]?.wavelengths);
   const datasets = rows.map((r,i)=>({
-    label: `${r.sample_code || "Record"} #${r.id}`,
+    label: `${r.tree_id || r.sample_code || "Record"} #${r.id}`,
     data: arr(r.reflectance),
     borderColor: SERIES_COLORS[i % SERIES_COLORS.length],
     backgroundColor: SERIES_COLORS[i % SERIES_COLORS.length],
@@ -744,9 +755,8 @@ function renderHistory(rows){
   document.getElementById("historyBody").innerHTML = rows.map(r=>`
     <tr onclick='selectMeasurement(${JSON.stringify(r.id)})' style="cursor:pointer">
       <td class="admin-only"><input type="checkbox" class="chk" data-id="${escapeHtml(String(r.id))}" ${leafSel.has(String(r.id))?"checked":""} onclick="event.stopPropagation()" onchange="toggleSel('leaf',this.dataset.id,this.checked)" /></td>
-      <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.sample_code||"-")}</td><td>${escapeHtml(r.sample_name||"-")}</td>
-      <td>${escapeHtml(r.plant_type||"-")}</td><td>${escapeHtml(r.leaf_side||"-")}</td>
-      <td>${escapeHtml(String(r.measurement_point??"-"))}</td><td>${escapeHtml(r.device_code||"-")}</td>
+      <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.tree_id||r.sample_code||"-")}</td><td>${escapeHtml(r.leaf_id||r.sample_name||"-")}</td>
+      <td>${escapeHtml(r.variety||r.plant_type||"-")}</td><td>${escapeHtml(positionLabel(r)||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td>
     </tr>`).join("");
   const head = document.getElementById("leafHeadChk");
   const checkedN = rows.filter(r=>leafSel.has(String(r.id))).length;
