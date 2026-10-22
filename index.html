@@ -150,7 +150,7 @@
     <h2>Measurement History</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th class="admin-only"><input type="checkbox" id="leafHeadChk" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all on this page" /></th><th>Date/Time</th><th>Tree ID</th><th>Leaf ID</th><th>Variety</th><th>Position</th><th>Device</th></tr></thead>
+        <thead><tr><th class="admin-only"><input type="checkbox" id="leafHeadChk" class="chk" onchange='selectAll("leaf",this.checked)' title="Select all on this page" /></th><th>Date/Time</th><th>Tree ID</th><th>Leaf ID</th><th>Variety</th><th>Position</th><th>Scan Position</th><th>Device</th></tr></thead>
         <tbody id="historyBody"></tbody>
       </table>
     </div>
@@ -380,15 +380,12 @@ function spectralColumns(prefix, wavelengths, values, row){
   });
 }
 
-function positionLabel(r){
-  const side = r.leaf_side || "";
-  let point = r.measurement_point;
-  if(point === 1 || point === "1") point = "Base";
-  else if(point === 2 || point === "2") point = "Middle";
-  else if(point === 3 || point === "3") point = "Tip";
-  else point = point == null ? "" : String(point);
-  if(side && point) return `${side} · ${point}`;
-  return side || point || "";
+function scanPositionLabel(r){
+  const p = r.measurement_point;
+  if(p === 1 || p === "1" || p === "Base") return "Base";
+  if(p === 2 || p === "2" || p === "Middle") return "Middle";
+  if(p === 3 || p === "3" || p === "Tip") return "Tip";
+  return p == null ? "" : String(p);
 }
 
 function mapLeafRow(r){
@@ -399,8 +396,19 @@ function mapLeafRow(r){
     tree_id: r.tree_id || r.sample_code || "",
     leaf_id: r.leaf_id || r.sample_name || "",
     variety: r.variety || r.plant_type || "",
-    position: positionLabel(r),
-    note: r.note || ""
+    position: r.leaf_side || "",
+    scan_position: scanPositionLabel(r),
+    sample_code: r.sample_code || "",
+    sample_name: r.sample_name || "",
+    plant_type: r.plant_type || "",
+    leaf_side: r.leaf_side || "",
+    measurement_point: r.measurement_point ?? "",
+    note: r.note || "",
+    wavelengths: arr(r.wavelengths).join(", "),
+    dark_raw: arr(r.dark_raw).join(", "),
+    white_raw: arr(r.white_raw).join(", "),
+    leaf_raw: arr(r.leaf_raw).join(", "),
+    reflectance: arr(r.reflectance).join(", ")
   };
   spectralColumns("dark", r.wavelengths, r.dark_raw, row);
   spectralColumns("white", r.wavelengths, r.white_raw, row);
@@ -414,7 +422,9 @@ function mapCalRow(r){
     id: r.id,
     created_at: r.created_at,
     device_code: r.device_code || "",
-    calibration_type: r.calibration_type || ""
+    calibration_type: r.calibration_type || "",
+    wavelengths: arr(r.wavelengths).join(", "),
+    values_raw: arr(r.values_raw).join(", ")
   };
   spectralColumns("raw", r.wavelengths, r.values_raw, row);
   return row;
@@ -524,13 +534,15 @@ async function downloadExcel(){
     const wsLeaf = XLSX.utils.json_to_sheet(leafRows);
     const wsCal = XLSX.utils.json_to_sheet(calibrationRows);
 
-    // Helpful default column widths
+    // Helpful default column widths (meta columns; spectral columns follow)
     wsLeaf["!cols"] = [
-      {wch:8},{wch:24},{wch:18},{wch:14},{wch:14},{wch:18},{wch:16},{wch:28}
+      {wch:8},{wch:24},{wch:18},{wch:14},{wch:14},{wch:18},{wch:14},{wch:14},
+      {wch:16},{wch:16},{wch:16},{wch:12},{wch:16},{wch:28},
+      {wch:34},{wch:34},{wch:34},{wch:34},{wch:34}
     ];
 
     wsCal["!cols"] = [
-      {wch:8},{wch:24},{wch:18},{wch:18}
+      {wch:8},{wch:24},{wch:18},{wch:18},{wch:34},{wch:34}
     ];
 
     XLSX.utils.book_append_sheet(wb, wsLeaf, "Leaf Measurements");
@@ -756,7 +768,7 @@ function renderHistory(rows){
     <tr onclick='selectMeasurement(${JSON.stringify(r.id)})' style="cursor:pointer">
       <td class="admin-only"><input type="checkbox" class="chk" data-id="${escapeHtml(String(r.id))}" ${leafSel.has(String(r.id))?"checked":""} onclick="event.stopPropagation()" onchange="toggleSel('leaf',this.dataset.id,this.checked)" /></td>
       <td>${fmtTime(r.created_at)}</td><td>${escapeHtml(r.tree_id||r.sample_code||"-")}</td><td>${escapeHtml(r.leaf_id||r.sample_name||"-")}</td>
-      <td>${escapeHtml(r.variety||r.plant_type||"-")}</td><td>${escapeHtml(positionLabel(r)||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td>
+      <td>${escapeHtml(r.variety||r.plant_type||"-")}</td><td>${escapeHtml(r.leaf_side||"-")}</td><td>${escapeHtml(scanPositionLabel(r)||"-")}</td><td>${escapeHtml(r.device_code||"-")}</td>
     </tr>`).join("");
   const head = document.getElementById("leafHeadChk");
   const checkedN = rows.filter(r=>leafSel.has(String(r.id))).length;

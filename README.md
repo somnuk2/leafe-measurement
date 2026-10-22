@@ -7,7 +7,7 @@
 5. Use **Download Excel** to export all rows from Supabase into an `.xlsx` workbook with separate Leaf Measurements and Calibrations sheets.
 6. Click **Admin** (top right) and log in to enable multi-select delete on the Measurement / Calibration history tables.
 
-Dashboard fields: **Tree ID** (tree_id, falls back to sample_code), **Leaf ID** (leaf_id, falls back to sample_name), **Variety** (variety, falls back to plant_type), **Position** (derived from leaf_side + measurement_point, e.g. "Upper · Base"). Update the ESP32 firmware to send tree_id / leaf_id / variety directly once available.
+Dashboard fields: **Tree ID** (tree_id, falls back to sample_code), **Leaf ID** (leaf_id, falls back to sample_name), **Variety** (variety, falls back to plant_type), **Position** (leaf side: Upper/Lower), **Scan Position** (measurement_point: Base/Middle/Tip). Update the ESP32 firmware to send tree_id / leaf_id / variety directly once available.
 
 Admin notes:
 
